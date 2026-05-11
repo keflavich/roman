@@ -179,6 +179,11 @@ HTML = f"""<!doctype html>
         <button class="survey" data-survey="P/2MASS/color">2MASS</button>
         <button class="survey" data-survey="P/allWISE/color">WISE</button>
         <button class="survey" data-survey="P/Spitzer/GLIMPSE360">GLIMPSE</button>
+        <button class="survey" data-survey="https://starformation.astro.ufl.edu/avm_images/rgb_final_uncropped_hips/">CMZ RGB</button>
+        <button class="survey" data-survey="https://starformation.astro.ufl.edu/avm_images/MUSTANG_12m_feather_noaxes_hips/">MUSTANG</button>
+        <button class="survey" data-survey="https://starformation.astro.ufl.edu/avm_images/jwst_cmz_hips/">JWST CMZ</button>
+        <button class="survey" data-survey="https://starformation.astro.ufl.edu/avm_images/Brick_RGB_444-356-200_transparent_hips/">Brick JWST</button>
+        <button class="survey" data-survey="https://starformation.astro.ufl.edu/avm_images/SgrA_RGB_MIRI_1500-1000-560_transparent_hips/">Sgr A* MIRI</button>
       </div>
     </div>
 
@@ -279,7 +284,8 @@ HTML = f"""<!doctype html>
       btn.addEventListener('click', () => {{
         document.querySelectorAll('button.survey').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
-        aladinInst.setImageSurvey(btn.dataset.survey);
+        const tgt = btn.dataset.survey;
+        aladinInst.setImageSurvey(tgt.startsWith('http') ? A.HiPS(tgt) : tgt);
       }});
     }});
 
