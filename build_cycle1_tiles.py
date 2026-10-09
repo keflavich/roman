@@ -25,13 +25,11 @@ One row per unique tile:  [ra, dec, v2, v3, pa]
 The page draws attitude(v2, v3, ra, dec, pa) applied to the WFI outline or
 SCA corners (pysiaf conventions).
 
-Field outlines: for each target, the fixed-orient tiles' WFI outlines are
-unioned in a gnomonic projection about the field centre (great-circle edges
-stay straight there), gaps narrower than OUTLINE_CLOSE are closed (dithers
-are dropped, so neighbouring tiles leave thin slivers), holes are dropped,
-and the exterior rings are simplified and densified.  Stored per program as
-outlines: {target: [[[ra, dec], ...], ...]}.  Free-orient tiles have no
-outline; the page draws them per tile.
+Outlines (see union_outline): per program, outlines = {target: rings} for
+each field's fixed-orient tiles, and program_outline = rings for all of the
+program's fixed-orient tiles together, so overlapping fields merge into one
+outline.  A ring is [[ra, dec], ...].  Free-orient tiles have no outline;
+the page draws them per tile.
     build_cycle1_tiles.py --outlines   recompute outlines only, from the JSON
 
 The +180: each region target's table in the .pointing file gives every region
@@ -218,6 +216,7 @@ WFI_OUTLINE_V3 = [-2510.3, -1800.8, -1416.3, -1530.9, -717.3, 194.9, 313.3,
 OUTLINE_CLOSE = 6 / 60      # deg; closes inter-tile gaps of up to ~12'
 OUTLINE_SIMPLIFY = 15 / 3600  # deg
 OUTLINE_STEP = 0.25         # deg; max edge length after densifying
+OUTLINE_LINK = 1.5          # deg; tile centres closer than this share a cluster
 
 
 def _unit(ra, dec):
@@ -226,56 +225,92 @@ def _unit(ra, dec):
                      np.sin(dec)], -1)
 
 
-def field_outlines(rows):
-    """Exterior rings ([[ra, dec], ...]) of the fixed-orient tiles' union."""
+def tile_polys(rows):
+    """Sky outline ([[ra, dec], ...]) of each fixed-orient tile."""
     from pysiaf.utils.rotations import attitude, pointing
+    return [np.array(pointing(attitude(r[2], r[3], r[0], r[1], r[4]),
+                              np.array(WFI_OUTLINE_V2),
+                              np.array(WFI_OUTLINE_V3))).T
+            for r in rows if r[4] is not None]
+
+
+def _clusters(tiles):
+    """Groups of tile indices whose centres chain together within OUTLINE_LINK."""
+    from scipy.sparse.csgraph import connected_components
+    from scipy.spatial import cKDTree
+    cen = np.array([_unit(*t.T).mean(0) for t in tiles])
+    cen /= np.linalg.norm(cen, axis=1)[:, None]
+    graph = cKDTree(cen).sparse_distance_matrix(
+        cKDTree(cen), 2 * np.sin(np.radians(OUTLINE_LINK) / 2))
+    n, lab = connected_components(graph, directed=False)
+    return [np.flatnonzero(lab == k) for k in range(n)]
+
+
+def union_outline(tiles):
+    """Exterior rings ([[ra, dec], ...]) of the union of sky polygons.
+
+    Each cluster of touching tiles is unioned in a Lambert azimuthal
+    equal-area projection about its centre (valid well past a hemisphere;
+    tile edges are short, so straight edges there track great circles to
+    well under an arcsec).  Gaps narrower than 2 * OUTLINE_CLOSE are closed
+    (dithers are dropped, so neighbouring tiles leave thin slivers), holes
+    are dropped, and rings are simplified and densified.
+    """
     from shapely.geometry import Polygon
     from shapely.ops import unary_union
-    fixed = [r for r in rows if r[4] is not None]
-    if not fixed:
-        return []
-    tiles = [np.array(pointing(attitude(r[2], r[3], r[0], r[1], r[4]),
-                               np.array(WFI_OUTLINE_V2),
-                               np.array(WFI_OUTLINE_V3))).T for r in fixed]
-    allv = _unit(*np.concatenate(tiles).T)
-    c = allv.mean(0)
-    c /= np.linalg.norm(c)
-    if np.degrees(np.arccos(np.clip(allv @ c, -1, 1))).max() > 60:
-        raise ValueError("field too large for one gnomonic projection")
-    e = np.cross([0, 0, 1], c)
-    e /= np.linalg.norm(e)
-    n = np.cross(c, e)
-
-    def proj(radec):
-        u = _unit(*radec.T)
-        z = u @ c
-        return np.stack([u @ e / z, u @ n / z], -1)
-
-    union = unary_union([Polygon(proj(t)).buffer(0) for t in tiles])
-    g = np.radians(OUTLINE_CLOSE)
-    union = union.buffer(g, join_style=2).buffer(-g, join_style=2)
     rings = []
-    for part in getattr(union, "geoms", [union]):
-        xy = np.array(part.exterior.simplify(np.radians(OUTLINE_SIMPLIFY)).coords)
-        dense = []
-        for a, b in zip(xy[:-1], xy[1:]):
-            k = max(1, int(np.ceil(np.degrees(np.hypot(*(b - a))) / OUTLINE_STEP)))
-            dense += [a + (b - a) * t for t in np.arange(k) / k]
-        x, y = np.array(dense).T
-        u = c[None] + x[:, None] * e[None] + y[:, None] * n[None]
-        u /= np.linalg.norm(u, axis=1)[:, None]
-        ra = np.degrees(np.arctan2(u[:, 1], u[:, 0])) % 360
-        dec = np.degrees(np.arcsin(u[:, 2]))
-        rings.append([[round(a, 4), round(d, 4)] for a, d in zip(ra, dec)])
+    if not tiles:
+        return rings
+    for idx in _clusters(tiles):
+        allv = _unit(*np.concatenate([tiles[i] for i in idx]).T)
+        c = allv.mean(0)
+        c /= np.linalg.norm(c)
+        if np.degrees(np.arccos(np.clip(allv @ c, -1, 1))).max() > 150:
+            raise ValueError("cluster too large for one LAEA projection")
+        e = np.cross([0, 0, 1], c)
+        e /= np.linalg.norm(e)
+        n = np.cross(c, e)
+
+        def proj(radec):
+            u = _unit(*radec.T)
+            k = np.sqrt(2 / (1 + u @ c))
+            return np.stack([k * (u @ e), k * (u @ n)], -1)
+
+        union = unary_union([Polygon(proj(tiles[i])).buffer(0) for i in idx])
+        g = np.radians(OUTLINE_CLOSE)
+        union = union.buffer(g, join_style=2).buffer(-g, join_style=2)
+        for part in getattr(union, "geoms", [union]):
+            xy = np.array(part.exterior.simplify(np.radians(OUTLINE_SIMPLIFY)).coords)
+            dense = []
+            for a, b in zip(xy[:-1], xy[1:]):
+                k = max(1, int(np.ceil(np.degrees(np.hypot(*(b - a))) / OUTLINE_STEP)))
+                dense += [a + (b - a) * t for t in np.arange(k) / k]
+            x, y = np.array(dense).T
+            rho = np.hypot(x, y)
+            z = 1 - rho ** 2 / 2
+            s = np.sqrt(np.clip(1 - z ** 2, 0, None)) / np.where(rho > 0, rho, 1)
+            u = (z[:, None] * c[None] + (s * x)[:, None] * e[None]
+                 + (s * y)[:, None] * n[None])
+            ra = np.degrees(np.arctan2(u[:, 1], u[:, 0])) % 360
+            dec = np.degrees(np.arcsin(np.clip(u[:, 2], -1, 1)))
+            rings.append([[round(a, 4), round(d, 4)] for a, d in zip(ra, dec)])
     return rings
 
 
 def add_outlines(data):
+    """Per field: outline of its fixed-orient tiles.  Per program: outline of
+    all its fixed-orient tiles together, so overlapping fields merge."""
     for prog, P in data.items():
-        P["outlines"] = OrderedDict(
-            (name, field_outlines(rows)) for name, rows in P["layers"].items())
+        tiles = OrderedDict((name, tile_polys(rows))
+                            for name, rows in P["layers"].items())
+        P["outlines"] = OrderedDict((name, union_outline(t))
+                                    for name, t in tiles.items())
+        P["program_outline"] = union_outline(
+            [t for ts in tiles.values() for t in ts])
         nv = sum(len(r) for rings in P["outlines"].values() for r in rings)
-        print(f"{prog} {P['short']}: outlines, {nv} vertices")
+        print(f"{prog} {P['short']}: field outlines {nv} vertices; program "
+              f"outline {len(P['program_outline'])} rings, "
+              f"{sum(len(r) for r in P['program_outline'])} vertices")
 
 
 def main():

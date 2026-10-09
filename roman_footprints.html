@@ -186,8 +186,9 @@
       <label><input type="radio" name="c1-mode" value="tiles"> every tile</label></div>
     <label class="c1-opt"><input type="checkbox" id="c1-detail" disabled> draw 18 SCAs (every-tile mode; slow with many tiles on)</label>
     <div id="c1-list"><div class="c1-note">Loading…</div></div>
-    <div class="c1-note">Field outlines: union of each field's fixed-orient tiles, with gaps
-      narrower than ~12′ closed and holes dropped. Every tile: one WFI outline per mosaic tile (dithers omitted), from the STScI APT
+    <div class="c1-note">Outlines: union of the fixed-orient tiles, with gaps narrower than ~12′
+      closed and holes dropped; one merged outline per program while all its fields are on,
+      per-field outlines otherwise. Every tile: one WFI outline per mosaic tile (dithers omitted), from the STScI APT
       files via APT 2026.4.4 <code>-export pointing</code>. Orient: the survey step's
       OrientRange midpoint, or the region target's planned orient. Tiles with no orient
       constraint (dashed) follow the orient slider; press Apply after changing it.</div>
@@ -544,8 +545,9 @@ function drawC1(key, pa) {
   const color = PROG_COLOR[prog] || '#ffffff';
   const fixed = [], free = [];
   if (c1Mode === 'outline') {
-    // Fixed-orient tiles: precomputed union outline.  Free-orient tiles: per tile.
-    fixed.push(...((C1[prog].outlines || {})[name] || []));
+    // Fixed-orient tiles: precomputed union outline (the whole-program outline
+    // replaces it while every field of the program is on).  Free-orient tiles: per tile.
+    if (!progAllOn(prog)) fixed.push(...((C1[prog].outlines || {})[name] || []));
     for (const r of rows) if (r[4] == null) free.push(...c1Polys(r, pa));
   } else {
     for (const r of rows) (r[4] == null ? free : fixed).push(...c1Polys(r, pa));
@@ -568,6 +570,24 @@ function drawC1(key, pa) {
   c1Ovs.set(key, ovs);
 }
 
+const c1ProgOv = new Map();  // prog -> overlay with the merged program outline
+
+function progKeys(prog) { return [...c1On.keys()].filter(k => k.startsWith(prog + '|')); }
+function progAllOn(prog) { return progKeys(prog).every(k => c1On.get(k)); }
+
+// Outline mode with every field of a program on: one merged outline, so
+// overlapping fields (HLWAS strips, GPS slices) draw as a single contour.
+function drawProg(prog) {
+  if (c1ProgOv.has(prog)) { aladin.removeOverlay(c1ProgOv.get(prog)); c1ProgOv.delete(prog); }
+  const rings = C1[prog].program_outline || [];
+  if (c1Mode !== 'outline' || !progAllOn(prog) || !rings.length) return;
+  const ov = A.graphicOverlay({ color: PROG_COLOR[prog] || '#ffffff', lineWidth: 1.5,
+                                name: `${prog} ${C1[prog].short}`, selectable: false });
+  aladin.addOverlay(ov);
+  addPolys(ov, rings);
+  c1ProgOv.set(prog, ov);
+}
+
 function c1Count() {
   let n = 0;
   for (const [key, on] of c1On) if (on) {
@@ -588,16 +608,26 @@ function redrawC1(onlyFree) {
   const t0 = performance.now();
   for (const key of c1On.keys())
     if (!onlyFree || c1Free.get(key)) drawC1(key, curPA);
+  if (!onlyFree) for (const prog of Object.keys(C1)) drawProg(prog);
   c1Status(Math.round(performance.now() - t0));
 }
 
 function setC1(keys, on) {
   const t0 = performance.now();
+  const progs = new Set(keys.map(k => k.split('|')[0]));
+  const before = new Map([...progs].map(p => [p, progAllOn(p)]));
   for (const key of keys) {
     c1On.set(key, on);
     drawC1(key, curPA);
     const b = document.querySelector(`.c1-tgt[data-key="${CSS.escape(key)}"]`);
     if (b) b.classList.toggle('active', on);
+  }
+  // In outline mode, a program switching between "all fields on" (merged
+  // outline) and "some on" (per-field outlines) needs its fields redrawn.
+  for (const p of progs) {
+    if (c1Mode === 'outline' && before.get(p) !== progAllOn(p))
+      for (const k of progKeys(p)) if (!keys.includes(k)) drawC1(k, curPA);
+    drawProg(p);
   }
   for (const pb of document.querySelectorAll('.c1-progbtn')) {
     const ks = [...c1On.keys()].filter(k => k.startsWith(pb.dataset.prog + '|'));
