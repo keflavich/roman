@@ -105,13 +105,24 @@
     #reset-btn:hover{background:rgba(255,100,100,.22)}    #load-btn{width:100%;padding:3px;font-size:11px;border-radius:4px;margin-bottom:4px;
       background:rgba(255,200,80,.10);border-color:rgba(255,200,80,.4);color:#ffc850}
     #load-btn:hover{background:rgba(255,200,80,.22)}    body.edit-mode #aladin{cursor:crosshair}
+    #ui-head{display:flex;justify-content:space-between;align-items:center;
+      cursor:move;user-select:none;touch-action:none}
+    .ui-ctl{display:flex;gap:4px}
+    .ui-ctl button{padding:0 6px;line-height:16px;font-size:12px}
+    #ui.collapsed #ui-body{display:none}
+    #ui.collapsed{overflow:hidden}
+    #ui.hidden,#ui-tab.hidden,#info.hidden{display:none}
+    #ui-tab{position:absolute;top:10px;right:10px;z-index:10;display:none;
+      background:rgba(12,12,18,.85)}
+    #ui-tab.shown{display:block}
   </style>
 </head>
 <body>
 <div id="aladin"></div>
 
 <div id="ui">
-  <h3>Roman WFI — Cycle 1 Footprints</h3>
+  <h3 id="ui-head" title="Drag to move; double-click to collapse"><span>Roman WFI — Cycle 1 Footprints</span><span class="ui-ctl"><button id="ui-min" title="Collapse / expand (c)">▾</button><button id="ui-hide" title="Hide panel (h); h again restores">✕</button></span></h3>
+  <div id="ui-body">
 
   <!-- Background survey -->
   <div class="section">
@@ -323,7 +334,9 @@
       pysiaf attitude_matrix in JS · edit mode applies to the earlier-design layers
     </div>
   </div>
+</div><!-- #ui-body -->
 </div>
+<button id="ui-tab" title="Show panel (h)">☰ Roman Cycle 1</button>
 
 <div id="info">Roman WFI · Cycle 1 core surveys + GAS programs · pysiaf geometry</div>
 
@@ -1134,6 +1147,50 @@ A.init.then(() => {
   });
 
 });
+</script>
+<script>
+// Panel: drag by header, collapse (▾ / c / double-click header), hide (✕ / h).
+(function(){
+  const ui=document.getElementById('ui'), head=document.getElementById('ui-head'),
+        tab=document.getElementById('ui-tab'), info=document.getElementById('info'),
+        minb=document.getElementById('ui-min');
+  function store(k,v){try{localStorage.setItem('rfp_'+k,JSON.stringify(v));}catch(e){}}
+  function load(k){try{return JSON.parse(localStorage.getItem('rfp_'+k));}catch(e){return null;}}
+  function place(x,y){
+    const w=ui.offsetWidth, h=head.offsetHeight;
+    x=Math.min(Math.max(0,x),window.innerWidth-w); y=Math.min(Math.max(0,y),window.innerHeight-h);
+    ui.style.left=x+'px'; ui.style.top=y+'px'; ui.style.right='auto';
+    ui.style.maxHeight=(window.innerHeight-y-10)+'px';
+  }
+  function setCollapsed(c){ui.classList.toggle('collapsed',c); minb.textContent=c?'▸':'▾'; store('collapsed',c);}
+  function setHidden(hide){
+    ui.classList.toggle('hidden',hide); info.classList.toggle('hidden',hide);
+    tab.classList.toggle('shown',hide && !clean);
+  }
+  let clean=false;
+  minb.onclick=e=>{e.stopPropagation(); setCollapsed(!ui.classList.contains('collapsed'));};
+  document.getElementById('ui-hide').onclick=e=>{e.stopPropagation(); clean=false; setHidden(true);};
+  tab.onclick=()=>{clean=false; setHidden(false);};
+  head.addEventListener('dblclick',e=>{if(!e.target.closest('button')) setCollapsed(!ui.classList.contains('collapsed'));});
+  head.addEventListener('pointerdown',e=>{
+    if(e.target.closest('button')) return;
+    const r=ui.getBoundingClientRect(), dx=e.clientX-r.left, dy=e.clientY-r.top;
+    head.setPointerCapture(e.pointerId);
+    const mv=ev=>place(ev.clientX-dx,ev.clientY-dy);
+    const up=()=>{head.removeEventListener('pointermove',mv); head.removeEventListener('pointerup',up);
+      store('pos',[parseFloat(ui.style.left),parseFloat(ui.style.top)]);};
+    head.addEventListener('pointermove',mv); head.addEventListener('pointerup',up);
+  });
+  // h: clean screenshot mode (panel, tab and info bar all hidden); h again restores.
+  document.addEventListener('keydown',e=>{
+    if(e.target.closest('input,textarea,select')||e.ctrlKey||e.metaKey||e.altKey) return;
+    if(e.key==='h'){const hide=!ui.classList.contains('hidden'); clean=hide; setHidden(hide);}
+    else if(e.key==='c'){setCollapsed(!ui.classList.contains('collapsed'));}
+  });
+  window.addEventListener('resize',()=>{if(ui.style.left) place(parseFloat(ui.style.left),parseFloat(ui.style.top));});
+  const pos=load('pos'); if(Array.isArray(pos)) place(pos[0],pos[1]);
+  if(load('collapsed')===true) setCollapsed(true);
+})();
 </script>
 </body>
 </html>
