@@ -115,6 +115,9 @@
     #ui-tab{position:absolute;top:10px;right:10px;z-index:10;display:none;
       background:rgba(12,12,18,.85)}
     #ui-tab.shown{display:block}
+    .sub-details summary{cursor:pointer;font-size:10px;text-transform:uppercase;
+      letter-spacing:.8px;color:#888;margin:4px 0}
+    .sub-details[open] summary{margin-bottom:5px}
   </style>
 </head>
 <body>
@@ -133,17 +136,23 @@
       <button class="survey" data-survey="P/2MASS/color">2MASS</button>
       <button class="survey" data-survey="P/allWISE/color">WISE</button>
       <button class="survey" data-survey="P/DSS2/color">DSS</button>
+    </div>
+    <details class="sub-details">
+      <summary>CMZ-only surveys</summary>
+      <div class="btn-row">
       <button class="survey" data-survey="https://starformation.astro.ufl.edu/avm_images/rgb_final_uncropped_hips/">CMZ RGB</button>
       <button class="survey" data-survey="https://starformation.astro.ufl.edu/avm_images/MUSTANG_12m_feather_noaxes_hips/">MUSTANG</button>
       <button class="survey" data-survey="https://starformation.astro.ufl.edu/avm_images/jwst_cmz_hips/">JWST CMZ</button>
       <button class="survey" data-survey="https://starformation.astro.ufl.edu/avm_images/Brick_RGB_444-356-200_transparent_hips/">Brick JWST</button>
       <button class="survey" data-survey="https://starformation.astro.ufl.edu/avm_images/SgrA_RGB_MIRI_1500-1000-560_transparent_hips/">Sgr A* MIRI</button>
-    </div>
+      </div>
+    </details>
   </div>
 
   <!-- PA control -->
   <div class="section">
-    <div class="section-label">APT orient (deg; pysiaf V3 PA = orient + 180)</div>
+    <details class="sub-details" id="orient-details">
+    <summary>APT orient (deg; pysiaf V3 PA = orient + 180)</summary>
     <div class="pa-grid">
       <label>Orient =</label>
       <input id="pa-val" type="number" min="0" max="360" step="0.1" value="90.6">
@@ -158,6 +167,7 @@
       <button class="pa-preset" data-pa="180">180°</button>
     </div>
     <button id="apply-btn">↺ Apply to all visible layers</button>
+    </details>
     <div id="status"></div>
   </div>
 
