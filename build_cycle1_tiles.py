@@ -25,6 +25,15 @@ One row per unique tile:  [ra, dec, v2, v3, pa]
 The page draws attitude(v2, v3, ra, dec, pa) applied to the WFI outline or
 SCA corners (pysiaf conventions).
 
+Field outlines: for each target, the fixed-orient tiles' WFI outlines are
+unioned in a gnomonic projection about the field centre (great-circle edges
+stay straight there), gaps narrower than OUTLINE_CLOSE are closed (dithers
+are dropped, so neighbouring tiles leave thin slivers), holes are dropped,
+and the exterior rings are simplified and densified.  Stored per program as
+outlines: {target: [[[ra, dec], ...], ...]}.  Free-orient tiles have no
+outline; the page draws them per tile.
+    build_cycle1_tiles.py --outlines   recompute outlines only, from the JSON
+
 The +180: each region target's table in the .pointing file gives every region
 point's V2/V3 while the telescope points at the region's reference position
 at its planned orient.  pysiaf attitude(0, 0, ref_ra, ref_dec, orient + 180)
@@ -35,7 +44,10 @@ run.
 import json
 import os
 import xml.etree.ElementTree as ET
+import sys
 from collections import OrderedDict
+
+import numpy as np
 
 from astropy import units as u
 from astropy.coordinates import SkyCoord
@@ -195,7 +207,86 @@ def build(prog):
     return title, out
 
 
+# WFI outline: union of the 18 SCAs, gaps closed, simplified to 17 vertices
+# (same as WFI_OUTLINE in roman_footprints.html), V2/V3 arcsec.
+WFI_OUTLINE_V2 = [1470.0, 228.2, 455.1, 658.1, 1243.5, 1654.3, 1453.5, 1673.1,
+                  2909.2, 2675.7, 2869.8, 2633.1, 2712.3, 2248.4, 2168.4,
+                  1919.9, 1721.7]
+WFI_OUTLINE_V3 = [-2510.3, -1800.8, -1416.3, -1530.9, -717.3, 194.9, 313.3,
+                  702.3, -18.0, -443.5, -560.2, -983.9, -1030.5, -1833.8,
+                  -1788.6, -2205.2, -2095.6]
+OUTLINE_CLOSE = 6 / 60      # deg; closes inter-tile gaps of up to ~12'
+OUTLINE_SIMPLIFY = 15 / 3600  # deg
+OUTLINE_STEP = 0.25         # deg; max edge length after densifying
+
+
+def _unit(ra, dec):
+    ra, dec = np.radians(ra), np.radians(dec)
+    return np.stack([np.cos(dec) * np.cos(ra), np.cos(dec) * np.sin(ra),
+                     np.sin(dec)], -1)
+
+
+def field_outlines(rows):
+    """Exterior rings ([[ra, dec], ...]) of the fixed-orient tiles' union."""
+    from pysiaf.utils.rotations import attitude, pointing
+    from shapely.geometry import Polygon
+    from shapely.ops import unary_union
+    fixed = [r for r in rows if r[4] is not None]
+    if not fixed:
+        return []
+    tiles = [np.array(pointing(attitude(r[2], r[3], r[0], r[1], r[4]),
+                               np.array(WFI_OUTLINE_V2),
+                               np.array(WFI_OUTLINE_V3))).T for r in fixed]
+    allv = _unit(*np.concatenate(tiles).T)
+    c = allv.mean(0)
+    c /= np.linalg.norm(c)
+    if np.degrees(np.arccos(np.clip(allv @ c, -1, 1))).max() > 60:
+        raise ValueError("field too large for one gnomonic projection")
+    e = np.cross([0, 0, 1], c)
+    e /= np.linalg.norm(e)
+    n = np.cross(c, e)
+
+    def proj(radec):
+        u = _unit(*radec.T)
+        z = u @ c
+        return np.stack([u @ e / z, u @ n / z], -1)
+
+    union = unary_union([Polygon(proj(t)).buffer(0) for t in tiles])
+    g = np.radians(OUTLINE_CLOSE)
+    union = union.buffer(g, join_style=2).buffer(-g, join_style=2)
+    rings = []
+    for part in getattr(union, "geoms", [union]):
+        xy = np.array(part.exterior.simplify(np.radians(OUTLINE_SIMPLIFY)).coords)
+        dense = []
+        for a, b in zip(xy[:-1], xy[1:]):
+            k = max(1, int(np.ceil(np.degrees(np.hypot(*(b - a))) / OUTLINE_STEP)))
+            dense += [a + (b - a) * t for t in np.arange(k) / k]
+        x, y = np.array(dense).T
+        u = c[None] + x[:, None] * e[None] + y[:, None] * n[None]
+        u /= np.linalg.norm(u, axis=1)[:, None]
+        ra = np.degrees(np.arctan2(u[:, 1], u[:, 0])) % 360
+        dec = np.degrees(np.arcsin(u[:, 2]))
+        rings.append([[round(a, 4), round(d, 4)] for a, d in zip(ra, dec)])
+    return rings
+
+
+def add_outlines(data):
+    for prog, P in data.items():
+        P["outlines"] = OrderedDict(
+            (name, field_outlines(rows)) for name, rows in P["layers"].items())
+        nv = sum(len(r) for rings in P["outlines"].values() for r in rings)
+        print(f"{prog} {P['short']}: outlines, {nv} vertices")
+
+
 def main():
+    if "--outlines" in sys.argv[1:]:
+        with open(OUT) as fh:
+            data = json.load(fh, object_pairs_hook=OrderedDict)
+        add_outlines(data)
+        with open(OUT, "w") as fh:
+            json.dump(data, fh, separators=(",", ":"))
+        print("wrote", OUT, os.path.getsize(OUT), "bytes")
+        return
     data = OrderedDict()
     for prog, (short, pi, hours, kind) in PROGRAMS.items():
         title, layers = build(prog)
@@ -205,6 +296,7 @@ def main():
         free = sum(r[4] is None for v in layers.values() for r in v)
         print(f"{prog} {short}: {len(layers)} targets, {n} tiles, "
               f"{free} unconstrained orient")
+    add_outlines(data)
     with open(OUT, "w") as fh:
         json.dump(data, fh, separators=(",", ":"))
     print("wrote", OUT, os.path.getsize(OUT), "bytes")

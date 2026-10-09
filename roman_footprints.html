@@ -136,6 +136,9 @@
       <button class="survey" data-survey="P/2MASS/color">2MASS</button>
       <button class="survey" data-survey="P/allWISE/color">WISE</button>
       <button class="survey" data-survey="P/DSS2/color">DSS</button>
+      <button class="survey" data-survey="CDS/P/DM/flux-color-Rp-G-Bp/I/355/gaiadr3" title="Gaia DR3 colour flux map (Rp, G, Bp), reconstructed from the source catalogue">Gaia</button>
+      <button class="survey" data-survey="CDS/P/IRIS/color" title="IRAS-IRIS colour composite">IRAS</button>
+      <button class="survey" data-survey="CDS/P/PLANCK/R2/HFI/color" title="Planck HFI colour composite, 353/545/857 GHz">Planck</button>
     </div>
     <details class="sub-details">
       <summary>CMZ-only surveys</summary>
@@ -178,9 +181,13 @@
       <button class="mini-btn" id="c1-all">all</button>
       <button class="mini-btn" id="c1-none">none</button>
     </div>
-    <label class="c1-opt"><input type="checkbox" id="c1-detail"> draw 18 SCAs (slow with many tiles on)</label>
+    <div class="c1-opt">Draw:
+      <label><input type="radio" name="c1-mode" value="outline" checked> field outlines</label>
+      <label><input type="radio" name="c1-mode" value="tiles"> every tile</label></div>
+    <label class="c1-opt"><input type="checkbox" id="c1-detail" disabled> draw 18 SCAs (every-tile mode; slow with many tiles on)</label>
     <div id="c1-list"><div class="c1-note">Loading…</div></div>
-    <div class="c1-note">One WFI outline per mosaic tile (dithers omitted), from the STScI APT
+    <div class="c1-note">Field outlines: union of each field's fixed-orient tiles, with gaps
+      narrower than ~12′ closed and holes dropped. Every tile: one WFI outline per mosaic tile (dithers omitted), from the STScI APT
       files via APT 2026.4.4 <code>-export pointing</code>. Orient: the survey step's
       OrientRange midpoint, or the region target's planned orient. Tiles with no orient
       constraint (dashed) follow the orient slider; press Apply after changing it.</div>
@@ -509,6 +516,7 @@ const c1On   = new Map();   // "prog|target" -> bool
 const c1Ovs  = new Map();   // "prog|target" -> [overlays]
 const c1Free = new Map();   // "prog|target" -> has unconstrained rows
 let c1Detail = false;
+let c1Mode = 'outline';     // 'outline': union outline per field; 'tiles': every tile
 
 // APT orient -> pysiaf attitude PA.  Checked against APT's region-target
 // tables (build_cycle1_tiles.py, check_orient_convention).
@@ -535,10 +543,17 @@ function drawC1(key, pa) {
   const rows = C1[prog].layers[name];
   const color = PROG_COLOR[prog] || '#ffffff';
   const fixed = [], free = [];
-  for (const r of rows) (r[4] == null ? free : fixed).push(...c1Polys(r, pa));
+  if (c1Mode === 'outline') {
+    // Fixed-orient tiles: precomputed union outline.  Free-orient tiles: per tile.
+    fixed.push(...((C1[prog].outlines || {})[name] || []));
+    for (const r of rows) if (r[4] == null) free.push(...c1Polys(r, pa));
+  } else {
+    for (const r of rows) (r[4] == null ? free : fixed).push(...c1Polys(r, pa));
+  }
   const ovs = [];
   if (fixed.length) {
-    const ov = A.graphicOverlay({ color, lineWidth: 1, name: `${prog} ${name}`, selectable: false });
+    const ov = A.graphicOverlay({ color, lineWidth: c1Mode === 'outline' ? 1.5 : 1,
+                                  name: `${prog} ${name}`, selectable: false });
     aladin.addOverlay(ov);
     addPolys(ov, fixed);
     ovs.push(ov);
@@ -563,7 +578,8 @@ function c1Count() {
 }
 
 function c1Status(ms) {
-  setStatus(`orient = ${curPA.toFixed(1)}°  ·  ${c1Count()} Cycle 1 tiles  ·  ${ms} ms`);
+  const what = c1Mode === 'outline' ? 'tiles, as field outlines' : 'Cycle 1 tiles';
+  setStatus(`orient = ${curPA.toFixed(1)}°  ·  ${c1Count()} ${what}  ·  ${ms} ms`);
 }
 
 // Redraw Cycle 1 layers: all of them, or only those with free-orient tiles
@@ -642,6 +658,12 @@ function buildC1UI() {
   }
   document.getElementById('c1-all').addEventListener('click', () => setC1([...c1On.keys()], true));
   document.getElementById('c1-none').addEventListener('click', () => setC1([...c1On.keys()], false));
+  for (const r of document.querySelectorAll('input[name="c1-mode"]'))
+    r.addEventListener('change', function() {
+      c1Mode = this.value;
+      document.getElementById('c1-detail').disabled = c1Mode !== 'tiles';
+      redrawC1(false);
+    });
   document.getElementById('c1-detail').addEventListener('change', function() {
     c1Detail = this.checked;
     redrawC1(false);
